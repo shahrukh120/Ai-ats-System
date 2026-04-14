@@ -6,13 +6,13 @@
 set -euo pipefail
 
 # ── Configuration (edit these) ──────────────────────────────
-RESOURCE_GROUP="ats-capstone-rg"
-LOCATION="eastus"
-ACR_NAME="atscapstoneacr"           # must be globally unique, lowercase
-APP_NAME="ai-ats-app"               # must be globally unique
-DB_SERVER_NAME="ats-capstone-db"     # must be globally unique
+RESOURCE_GROUP="${RESOURCE_GROUP:-ats-capstone-rg}"
+LOCATION="${LOCATION:-eastus}"
+ACR_NAME="${ACR_NAME:-atscapstoneacr}"           # must be globally unique, lowercase
+APP_NAME="${APP_NAME:-ai-ats-app}"               # must be globally unique
+DB_SERVER_NAME="${DB_SERVER_NAME:-ats-capstone-db}"  # must be globally unique
 DB_ADMIN_USER="atsadmin"
-DB_ADMIN_PASSWORD=""                 # set via: export DB_ADMIN_PASSWORD=<your-password>
+DB_ADMIN_PASSWORD="${DB_ADMIN_PASSWORD:-}"  # set via: export DB_ADMIN_PASSWORD=<your-password>
 DB_NAME="ats_db"
 APP_SERVICE_PLAN="ats-plan"
 SKU="B2"                            # B2 = 2 vCPU, 3.5 GB (good for demo)
