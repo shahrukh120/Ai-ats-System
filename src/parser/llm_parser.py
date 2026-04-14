@@ -2,9 +2,10 @@
 import json
 import logging
 import requests
-from groq import Groq
 from src.parser.models import ResumeData
 from config.settings import settings
+
+# groq imported lazily inside _parse_with_groq()
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ Rules:
 
 def _parse_with_groq(raw_text: str) -> dict:
     """Parse resume using Groq cloud API."""
+    from groq import Groq
     client = Groq(api_key=settings.groq_api_key, timeout=30.0, max_retries=2)
     truncated = raw_text[:4000]
 

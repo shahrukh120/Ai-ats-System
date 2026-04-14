@@ -6,11 +6,11 @@
 set -euo pipefail
 
 # ── Configuration (edit these) ──────────────────────────────
-RESOURCE_GROUP="${RESOURCE_GROUP:-ats-capstone-rg}"
-LOCATION="${LOCATION:-eastus}"
-ACR_NAME="${ACR_NAME:-atscapstoneacr}"           # must be globally unique, lowercase
+RESOURCE_GROUP="${RESOURCE_GROUP:-ats-capstone-rg-india}"
+LOCATION="${LOCATION:-centralindia}"
+ACR_NAME="${ACR_NAME:-atscapstoneacr123}"          # must be globally unique, lowercase
 APP_NAME="${APP_NAME:-ai-ats-app}"               # must be globally unique
-DB_SERVER_NAME="${DB_SERVER_NAME:-ats-capstone-db}"  # must be globally unique
+DB_SERVER_NAME="${DB_SERVER_NAME:-ats-capstone-db123}"  # must be globally unique
 DB_ADMIN_USER="atsadmin"
 DB_ADMIN_PASSWORD="${DB_ADMIN_PASSWORD:-}"  # set via: export DB_ADMIN_PASSWORD=<your-password>
 DB_NAME="ats_db"
@@ -48,13 +48,13 @@ az acr create \
   --output none
 
 # Build and push image
-echo "       Building and pushing Docker image..."
-az acr build \
-  --registry "$ACR_NAME" \
-  --image ats-app:latest \
-  --file Dockerfile \
-  . \
-  --no-logs
+#echo "       Building and pushing Docker image..."
+#az acr build \
+#  --registry "$ACR_NAME" \
+#  --image ats-app:latest \
+#  --file Dockerfile \
+#  . \
+#  --no-logs
 
 # ── 3. PostgreSQL Flexible Server ────────────────────────────
 echo "[3/7] Creating PostgreSQL server (with pgvector)..."
@@ -140,6 +140,7 @@ az webapp config appsettings set \
     LLM_MODEL="llama-3.3-70b-versatile" \
     EMBEDDING_MODEL="all-MiniLM-L6-v2" \
     WEBSITES_PORT=8000 \
+    WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
     ALLOWED_ORIGINS="https://${APP_NAME}.azurewebsites.net" \
   --output none
 

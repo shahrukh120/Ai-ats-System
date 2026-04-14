@@ -13,18 +13,11 @@ import logging
 from typing import TypedDict, Optional, List, Dict, Any
 from pathlib import Path
 
-from langgraph.graph import StateGraph, END
-
 from config.settings import settings
-from src.parser.pdf_extractor import extract_text_from_pdf
-from src.parser.llm_parser import parse_resume_with_llm
-from src.rag.embeddings import embed_text
-from src.rag.retriever import get_top_candidates, match_candidates_to_job
-from src.rag.chunker import prepare_candidate_text
-from src.agents.interview_agent import generate_interview_questions
-from src.agents.text_to_sql import text_to_sql
-from src.database.session import SessionLocal
-from src.database.models import Candidate, JobRole, Application
+
+# Heavy imports deferred to function scope to speed up container startup
+# from langgraph.graph import StateGraph, END  — imported lazily in build_*()
+# from src.rag.embeddings import embed_text     — imported lazily in parser_node()
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +45,13 @@ class PipelineState(TypedDict):
 
 def parser_node(state: PipelineState) -> PipelineState:
     """Parse resume PDF and store in database."""
+    from src.parser.pdf_extractor import extract_text_from_pdf
+    from src.parser.llm_parser import parse_resume_with_llm
+    from src.rag.embeddings import embed_text
+    from src.rag.chunker import prepare_candidate_text
+    from src.database.session import SessionLocal
+    from src.database.models import Candidate
+
     logger.info("Parser Agent: Processing resume...")
     state["stage"] = "parsing"
 
@@ -113,6 +113,10 @@ def parser_node(state: PipelineState) -> PipelineState:
 
 def matching_node(state: PipelineState) -> PipelineState:
     """Match candidate against job roles using RAG."""
+    from src.rag.retriever import get_top_candidates, match_candidates_to_job
+    from src.database.session import SessionLocal
+    from src.database.models import JobRole
+
     logger.info("Matching Agent: Computing semantic matches...")
     state["stage"] = "matching"
 
@@ -170,6 +174,10 @@ def matching_node(state: PipelineState) -> PipelineState:
 
 def interview_node(state: PipelineState) -> PipelineState:
     """Generate interview questions for top matched candidates."""
+    from src.agents.interview_agent import generate_interview_questions
+    from src.database.session import SessionLocal
+    from src.database.models import Candidate, JobRole
+
     logger.info("Interview Agent: Generating questions...")
     state["stage"] = "interview"
 
@@ -249,8 +257,10 @@ def should_continue_to_interview(state: PipelineState) -> str:
     return "end"
 
 
-def build_pipeline() -> StateGraph:
+def build_pipeline():
     """Build the LangGraph multi-agent pipeline."""
+    from langgraph.graph import StateGraph, END
+
     workflow = StateGraph(PipelineState)
 
     # Add nodes
@@ -277,8 +287,10 @@ def build_pipeline() -> StateGraph:
     return workflow.compile()
 
 
-def build_matching_pipeline() -> StateGraph:
+def build_matching_pipeline():
     """Build a pipeline that starts from matching (no parsing needed)."""
+    from langgraph.graph import StateGraph, END
+
     workflow = StateGraph(PipelineState)
 
     workflow.add_node("matching", matching_node)
@@ -296,6 +308,22 @@ def build_matching_pipeline() -> StateGraph:
     return workflow.compile()
 
 
-# Pre-built pipelines
-full_pipeline = build_pipeline()
-matching_pipeline = build_matching_pipeline()
+# Lazy pipeline singletons — only compiled on first use
+_full_pipeline = None
+_matching_pipeline = None
+
+
+def get_full_pipeline():
+    """Get the full pipeline (lazy-compiled on first call)."""
+    global _full_pipeline
+    if _full_pipeline is None:
+        _full_pipeline = build_pipeline()
+    return _full_pipeline
+
+
+def get_matching_pipeline():
+    """Get the matching pipeline (lazy-compiled on first call)."""
+    global _matching_pipeline
+    if _matching_pipeline is None:
+        _matching_pipeline = build_matching_pipeline()
+    return _matching_pipeline

@@ -2,8 +2,9 @@
 import json
 import logging
 import requests
-from groq import Groq
 from config.settings import settings
+
+# groq imported lazily inside _groq_chat()
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ def llm_chat_json(
 
 
 def _groq_chat(system_prompt, user_prompt, temperature, max_tokens, json_mode):
+    from groq import Groq
     client = Groq(api_key=settings.groq_api_key, timeout=30.0, max_retries=2)
     kwargs = {
         "model": settings.llm_model,

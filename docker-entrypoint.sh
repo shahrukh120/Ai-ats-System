@@ -5,17 +5,19 @@ echo "========================================="
 echo "  AI-Powered ATS — Starting Up"
 echo "========================================="
 
-# Wait for PostgreSQL to be ready
-echo "[1/4] Waiting for database..."
+# ── Wait for PostgreSQL (lightweight check, no heavy imports) ──
+echo "[1/2] Waiting for database..."
 MAX_RETRIES=30
 RETRY=0
 until python -c "
-from sqlalchemy import create_engine, text
-import os
-engine = create_engine(os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@db:5432/ats_db'))
-with engine.connect() as conn:
-    conn.execute(text('SELECT 1'))
-    print('Database connected!')
+import os, socket
+from urllib.parse import urlparse
+url = urlparse(os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@db:5432/ats_db'))
+host = url.hostname or 'db'
+port = url.port or 5432
+s = socket.create_connection((host, port), timeout=3)
+s.close()
+print(f'Database reachable at {host}:{port}')
 " 2>/dev/null; do
     RETRY=$((RETRY+1))
     if [ $RETRY -ge $MAX_RETRIES ]; then
@@ -26,41 +28,36 @@ with engine.connect() as conn:
     sleep 2
 done
 
-# Create tables + pgvector extension
-echo "[2/4] Initializing database schema..."
+# ── Init schema + seed in ONE Python process (avoids 3x cold starts) ──
+echo "[2/2] Initializing database..."
 python -c "
-from src.database.session import engine, SessionLocal
-from src.database.models import Base
 from sqlalchemy import text
+from src.database.session import engine, SessionLocal
+from src.database.models import Base, Candidate
 
-# Ensure pgvector extension exists
+# pgvector extension + schema
 with engine.connect() as conn:
     conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
     conn.commit()
-
 Base.metadata.create_all(bind=engine)
-print('Schema ready!')
-"
+print('  Schema ready!')
 
-# Seed database if empty (only on first run)
-echo "[3/4] Checking if seeding is needed..."
-python -c "
-from src.database.session import SessionLocal
-from src.database.models import Candidate
+# Check if seeding is needed
 session = SessionLocal()
 count = session.query(Candidate).count()
 session.close()
 if count == 0:
-    print('Database empty — running seed...')
+    print('  Database empty — running seed...')
     import subprocess, sys
     subprocess.run([sys.executable, '-m', 'scripts.seed_database'], check=True)
     subprocess.run([sys.executable, '-m', 'scripts.compute_embeddings'], check=True)
-    print('Seeding complete!')
+    print('  Seeding complete!')
 else:
-    print(f'Database has {count} candidates — skipping seed.')
+    print(f'  Database has {count} candidates — skipping seed.')
 "
 
-echo "[4/4] Starting application server..."
+echo "========================================="
+echo "  Starting application server..."
 echo "========================================="
 
 exec "$@"

@@ -10,12 +10,8 @@ import logging
 from typing import List, Dict, Any, Optional
 
 import numpy as np
-from fairlearn.metrics import (
-    MetricFrame,
-    selection_rate,
-    demographic_parity_difference,
-    demographic_parity_ratio,
-)
+
+# fairlearn imported lazily inside run_fairness_audit() to speed up startup
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +49,14 @@ def run_fairness_audit(
             "message": "Only one group present, fairness comparison not applicable",
             "groups": unique_groups.tolist(),
         }
+
+    # Lazy import fairlearn (heavy dependency)
+    from fairlearn.metrics import (
+        MetricFrame,
+        selection_rate,
+        demographic_parity_difference,
+        demographic_parity_ratio,
+    )
 
     # Compute per-group selection rates
     metric_frame = MetricFrame(
