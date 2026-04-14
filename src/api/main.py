@@ -109,7 +109,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # ── Database initialization on startup (not at import time) ────────
 @app.on_event("startup")
 async def init_database():
-    """Create tables + pgvector extension on first startup."""
+    """Create tables + pgvector extension + seed job roles on first startup."""
     try:
         from sqlalchemy import text as sa_text
         with engine.connect() as conn:
@@ -117,6 +117,21 @@ async def init_database():
             conn.commit()
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema initialized successfully")
+
+        # Auto-seed job roles (hardcoded, no files needed)
+        from scripts.seed_database import SYNTHETIC_JOBS
+        session = SessionLocal()
+        try:
+            existing = session.query(JobRole).count()
+            if existing == 0:
+                for job_data in SYNTHETIC_JOBS:
+                    session.add(JobRole(**job_data))
+                session.commit()
+                logger.info(f"Seeded {len(SYNTHETIC_JOBS)} job roles")
+            else:
+                logger.info(f"Job roles already exist ({existing}), skipping seed")
+        finally:
+            session.close()
     except Exception as e:
         logger.warning(f"Database init deferred (will retry on first request): {e}")
 
@@ -125,6 +140,105 @@ async def init_database():
 async def root(request: Request):
     """Serve the frontend."""
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+# ─── Bulk Seed Endpoint (for populating Azure DB from local data) ──
+
+@app.post("/seed/candidates", tags=["Admin"])
+async def seed_candidates_bulk(request: Request):
+    """Bulk insert candidates from JSON array.
+
+    POST body: [{"file_name": "...", "category": "...", "name": "...", ...}, ...]
+    Used to populate Azure DB from locally parsed resumes.
+    """
+    data = await request.json()
+    if not isinstance(data, list):
+        raise HTTPException(status_code=400, detail="Expected JSON array of candidate objects")
+
+    session = SessionLocal()
+    inserted = 0
+    skipped = 0
+    try:
+        for item in data:
+            existing = session.query(Candidate).filter_by(
+                file_name=item.get("file_name", "")
+            ).first()
+            if existing:
+                skipped += 1
+                continue
+
+            candidate = Candidate(
+                file_name=item.get("file_name", "unknown"),
+                category=item.get("category", "GENERAL"),
+                name=item.get("name"),
+                email=item.get("email"),
+                phone=item.get("phone"),
+                skills=item.get("skills", []),
+                experience=item.get("experience", []),
+                education=item.get("education", []),
+                summary=item.get("summary"),
+                total_years_experience=item.get("total_years_experience"),
+                raw_text=item.get("raw_text", ""),
+            )
+            session.add(candidate)
+            inserted += 1
+
+            if inserted % 100 == 0:
+                session.commit()
+
+        session.commit()
+    finally:
+        session.close()
+
+    return {"inserted": inserted, "skipped": skipped, "total_in_batch": len(data)}
+
+
+@app.post("/seed/embeddings", tags=["Admin"])
+async def seed_embeddings():
+    """Compute embeddings for all candidates that don't have one yet."""
+    session = SessionLocal()
+    try:
+        from sqlalchemy import text as sa_text
+        rows = session.execute(
+            sa_text("SELECT id, name, category, skills, summary, raw_text FROM candidates WHERE embedding IS NULL LIMIT 200")
+        ).fetchall()
+
+        if not rows:
+            return {"message": "All candidates already have embeddings", "computed": 0}
+
+        computed = 0
+        for row in rows:
+            # Build text for embedding
+            parts = []
+            if row.name:
+                parts.append(row.name)
+            if row.category:
+                parts.append(f"Category: {row.category}")
+            if row.skills:
+                skills = row.skills if isinstance(row.skills, list) else []
+                parts.append(f"Skills: {', '.join(skills[:20])}")
+            if row.summary:
+                parts.append(row.summary[:500])
+            elif row.raw_text:
+                parts.append(row.raw_text[:500])
+
+            text = " | ".join(parts) if parts else "unknown candidate"
+            embedding = embed_text(text)
+
+            session.execute(
+                sa_text("UPDATE candidates SET embedding = :emb WHERE id = :id"),
+                {"emb": str(embedding), "id": row.id},
+            )
+            computed += 1
+
+            if computed % 50 == 0:
+                session.commit()
+                logger.info(f"  Computed {computed}/{len(rows)} embeddings...")
+
+        session.commit()
+        return {"message": f"Computed {computed} embeddings", "computed": computed, "remaining": max(0, len(rows) - computed)}
+    finally:
+        session.close()
 
 
 # ─── Upload Endpoint ────────────────────────────────────────────────
