@@ -125,7 +125,9 @@ az webapp create \
 # ── 6. Configure Environment Variables ──────────────────────
 echo "[6/7] Setting environment variables..."
 DB_HOST="${DB_SERVER_NAME}.postgres.database.azure.com"
-DATABASE_URL="postgresql://${DB_ADMIN_USER}:${DB_ADMIN_PASSWORD}@${DB_HOST}:5432/${DB_NAME}?sslmode=require"
+# URL-encode the password (@ ! # etc. break postgresql:// URLs)
+DB_PASSWORD_ENCODED=$(python3 -c "from urllib.parse import quote; print(quote('${DB_ADMIN_PASSWORD}', safe=''))")
+DATABASE_URL="postgresql://${DB_ADMIN_USER}:${DB_PASSWORD_ENCODED}@${DB_HOST}:5432/${DB_NAME}?sslmode=require"
 
 az webapp config appsettings set \
   --resource-group "$RESOURCE_GROUP" \

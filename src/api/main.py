@@ -106,8 +106,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# Create tables on startup
-Base.metadata.create_all(bind=engine)
+# ── Database initialization on startup (not at import time) ────────
+@app.on_event("startup")
+async def init_database():
+    """Create tables + pgvector extension on first startup."""
+    try:
+        from sqlalchemy import text as sa_text
+        with engine.connect() as conn:
+            conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.commit()
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database schema initialized successfully")
+    except Exception as e:
+        logger.warning(f"Database init deferred (will retry on first request): {e}")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
