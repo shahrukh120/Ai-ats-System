@@ -14,12 +14,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from config.settings import settings
-from src.database.models import Base, Candidate, JobRole
+from src.database.models import Base, Candidate, JobRole, Application
 from src.database.session import engine, SessionLocal
 from src.api.schemas import (
     CandidateResponse, JobRoleResponse, MatchResponse, MatchResult,
     QueryRequest, QueryResponse, InterviewResponse, InterviewQuestion,
     UploadResponse, JobCreateRequest,
+    PipelineResponse, PipelineColumn, PipelineCard,
+    StageUpdateRequest, ApplicationCreateRequest,
 )
 from src.parser.pdf_extractor import extract_text_from_pdf
 from src.parser.llm_parser import parse_resume_with_llm
@@ -752,5 +754,154 @@ def get_anonymized_candidate(candidate_id: int):
         anonymized = anonymize_candidate(candidate_data)
         anonymized["candidate_id"] = candidate_id
         return anonymized
+    finally:
+        session.close()
+
+
+# ─── Pipeline / Kanban Board ────────────────────────────────────────
+
+PIPELINE_STAGES = [
+    ("applied",   "Applied"),
+    ("screened",  "Screened"),
+    ("interview", "Interview"),
+    ("offer",     "Offer"),
+    ("hired",     "Hired"),
+    ("rejected",  "Rejected"),
+]
+VALID_STAGES = {s for s, _ in PIPELINE_STAGES}
+
+
+@app.get("/pipeline/{job_id}", response_model=PipelineResponse, tags=["Pipeline"])
+def get_pipeline(job_id: int):
+    """Return all applications for a job, grouped by pipeline stage."""
+    session = SessionLocal()
+    try:
+        job = session.query(JobRole).get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job role {job_id} not found")
+
+        apps = (
+            session.query(Application, Candidate)
+            .join(Candidate, Application.candidate_id == Candidate.id)
+            .filter(Application.job_role_id == job_id)
+            .order_by(Application.applied_at.desc())
+            .all()
+        )
+
+        by_stage = {s: [] for s, _ in PIPELINE_STAGES}
+        for app_row, cand in apps:
+            stage = (app_row.status or "applied").lower()
+            if stage not in by_stage:
+                stage = "applied"
+            by_stage[stage].append(PipelineCard(
+                application_id=app_row.id,
+                candidate_id=cand.id,
+                candidate_name=cand.name,
+                category=cand.category,
+                skills=(cand.skills or [])[:10],
+                total_years_experience=cand.total_years_experience,
+                match_score=app_row.match_score,
+                stage=stage,
+                notes=app_row.notes,
+            ))
+
+        columns = [
+            PipelineColumn(stage=s, label=lbl, count=len(by_stage[s]), cards=by_stage[s])
+            for s, lbl in PIPELINE_STAGES
+        ]
+        return PipelineResponse(
+            job_id=job_id, job_title=job.title,
+            columns=columns, total=len(apps),
+        )
+    finally:
+        session.close()
+
+
+@app.post("/applications", tags=["Pipeline"])
+def create_application(payload: ApplicationCreateRequest):
+    """Add a candidate to a job's pipeline (creates an Application row)."""
+    stage = (payload.stage or "applied").lower()
+    if stage not in VALID_STAGES:
+        raise HTTPException(status_code=400, detail=f"Invalid stage '{stage}'. Must be one of {sorted(VALID_STAGES)}")
+
+    session = SessionLocal()
+    try:
+        # Validate candidate and job exist
+        if not session.query(Candidate).get(payload.candidate_id):
+            raise HTTPException(status_code=404, detail=f"Candidate {payload.candidate_id} not found")
+        if not session.query(JobRole).get(payload.job_role_id):
+            raise HTTPException(status_code=404, detail=f"Job role {payload.job_role_id} not found")
+
+        # Prevent duplicate (same candidate + job)
+        existing = (
+            session.query(Application)
+            .filter_by(candidate_id=payload.candidate_id, job_role_id=payload.job_role_id)
+            .first()
+        )
+        if existing:
+            return {
+                "id": existing.id, "status": existing.status,
+                "message": "Candidate already in this pipeline",
+                "duplicate": True,
+            }
+
+        notes = sanitize_text(payload.notes, max_length=MAX_FIELD_LENGTH) if payload.notes else None
+        app_row = Application(
+            candidate_id=payload.candidate_id,
+            job_role_id=payload.job_role_id,
+            match_score=payload.match_score,
+            status=stage,
+            notes=notes,
+        )
+        session.add(app_row)
+        session.commit()
+        session.refresh(app_row)
+        return {
+            "id": app_row.id, "status": app_row.status,
+            "message": "Added to pipeline", "duplicate": False,
+        }
+    finally:
+        session.close()
+
+
+@app.patch("/applications/{application_id}/stage", tags=["Pipeline"])
+def update_application_stage(application_id: int, payload: StageUpdateRequest):
+    """Move a candidate card to a different pipeline stage (drag-drop target)."""
+    stage = (payload.stage or "").lower()
+    if stage not in VALID_STAGES:
+        raise HTTPException(status_code=400, detail=f"Invalid stage '{stage}'. Must be one of {sorted(VALID_STAGES)}")
+
+    session = SessionLocal()
+    try:
+        app_row = session.query(Application).get(application_id)
+        if not app_row:
+            raise HTTPException(status_code=404, detail=f"Application {application_id} not found")
+
+        prev = app_row.status
+        app_row.status = stage
+        session.commit()
+        session.refresh(app_row)
+        logger.info(f"Application {application_id} moved: {prev} → {stage}")
+        return {
+            "id": app_row.id,
+            "previous_stage": prev,
+            "stage": app_row.status,
+            "message": f"Moved to {stage}",
+        }
+    finally:
+        session.close()
+
+
+@app.delete("/applications/{application_id}", tags=["Pipeline"])
+def delete_application(application_id: int):
+    """Remove a candidate from the pipeline."""
+    session = SessionLocal()
+    try:
+        app_row = session.query(Application).get(application_id)
+        if not app_row:
+            raise HTTPException(status_code=404, detail=f"Application {application_id} not found")
+        session.delete(app_row)
+        session.commit()
+        return {"id": application_id, "message": "Removed from pipeline"}
     finally:
         session.close()
